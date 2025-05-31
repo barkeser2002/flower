@@ -21,22 +21,20 @@ namespace engine
 		width = newWidth;
 		height = newHeight;
 	}
-
 	void GLFWWindowData::callbackOnMouseMove(double xpos, double ypos)
 	{
-		mousePosition.x = (float)xpos;
-		mousePosition.y = (float)ypos;
+		mousePosition.x = static_cast<float>(xpos);
+		mousePosition.y = static_cast<float>(ypos);
 	}
 
 	void GLFWWindowData::callbackOnMouseButton(int button, int action, int mods)
 	{
 
 	}
-
 	void GLFWWindowData::callbackOnScroll(double xoffset, double yoffset)
 	{
-		scrollOffset.x = (float)xoffset;
-		scrollOffset.y = (float)yoffset;
+		scrollOffset.x = static_cast<float>(xoffset);
+		scrollOffset.y = static_cast<float>(yoffset);
 	}
 
 	void GLFWWindowData::callbackOnSetFoucus(bool inFocusState)
@@ -146,9 +144,23 @@ namespace engine
 		glfwSetCursorPosCallback(m_data.window, mouseMoveCallback);
 		glfwSetScrollCallback(m_data.window, scrollCallback);
 		glfwSetWindowFocusCallback(m_data.window, windowFocusCallBack);
-
-		m_data.icon.pixels = stbi_load(info.appIcon.c_str(), &m_data.icon.width, &m_data.icon.height, 0, 4);
-		glfwSetWindowIcon(m_data.window, 1, &m_data.icon);
+		// Load window icon if path is provided
+		if (!info.appIcon.empty())
+		{
+			int width, height, channels;
+			unsigned char* pixels = stbi_load(info.appIcon.c_str(), &width, &height, &channels, 4);
+			if (pixels)
+			{
+				m_data.icon.width = width;
+				m_data.icon.height = height;
+				m_data.icon.pixels = pixels;
+				glfwSetWindowIcon(m_data.window, 1, &m_data.icon);
+			}
+			else
+			{
+				LOG_WARN("Failed to load window icon: {0}", info.appIcon);
+			}
+		}
 
 		bool bInitResult = true;
 		m_initBodies.broadcast(this, bInitResult);
@@ -188,9 +200,12 @@ namespace engine
 	{
 		bool bReleaseResult = true;
 		m_releaseBodies.broadcast(this, bReleaseResult);
-
-		// Free icon memory.
-		stbi_image_free(m_data.icon.pixels);
+		// Free icon memory if it was loaded.
+		if (m_data.icon.pixels)
+		{
+			stbi_image_free(m_data.icon.pixels);
+			m_data.icon.pixels = nullptr;
+		}
 
 		// Release windows.
 		glfwDestroyWindow(m_data.window);

@@ -262,8 +262,7 @@ namespace engine
 		{
 			m_swapchain.release();
 			m_swapchain.init();
-		}
-		initPresentContext();
+		}		initPresentContext();
 
 		m_presentContext.imagesInFlight.resize(m_swapchain.getBackbufferCount(), VK_NULL_HANDLE);
 
@@ -284,7 +283,6 @@ namespace engine
 		LOG_RHI_FATAL("No suitable memory type can find.");
 		return ~0;
 	}
-
 	uint32_t VulkanContext::acquireNextPresentImage()
 	{
 		auto swapchainRebuildState = [this]()
@@ -305,13 +303,13 @@ namespace engine
 
 		m_presentContext.bSwapchainChange |= swapchainRebuildState();
 
-		vkWaitForFences(m_device, 1, &m_presentContext.inFlightFences[m_presentContext.currentFrame], VK_TRUE, UINT64_MAX);
-
+		// First, wait for the current frame's fence to be ready
+		vkWaitForFences(m_device, 1, &m_presentContext.inFlightFences[m_presentContext.currentFrame], VK_TRUE, UINT64_MAX);		// Acquire the next image using current frame's semaphore
 		VkResult result = vkAcquireNextImageKHR(
 			m_device,
 			m_swapchain.get(),
 			UINT64_MAX,
-			m_presentContext.semaphoresImageAvailable[m_presentContext.currentFrame],
+			m_presentContext.imageAvailableSemaphores[m_presentContext.currentFrame],
 			VK_NULL_HANDLE,
 			&m_presentContext.imageIndex
 		);
@@ -322,25 +320,25 @@ namespace engine
 		}
 		else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
 		{
-			LOG_RHI_FATAL("Fail to requeset present image.");
+			LOG_RHI_FATAL("Fail to request present image.");
 		}
 
+		// Check if this specific image is still being used by a previous frame
 		if (m_presentContext.imagesInFlight[m_presentContext.imageIndex] != VK_NULL_HANDLE)
 		{
 			vkWaitForFences(m_device, 1, &m_presentContext.imagesInFlight[m_presentContext.imageIndex], VK_TRUE, UINT64_MAX);
 		}
 
+		// Mark this image as being used by the current frame
 		m_presentContext.imagesInFlight[m_presentContext.imageIndex] = m_presentContext.inFlightFences[m_presentContext.currentFrame];
 
 		return m_presentContext.imageIndex;
-	}
-
-	void VulkanContext::present()
+	}	void VulkanContext::present()
 	{
 		VkPresentInfoKHR presentInfo{};
 		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
-		VkSemaphore signalSemaphores[] = { m_presentContext.semaphoresRenderFinished[m_presentContext.currentFrame] };
+		VkSemaphore signalSemaphores[] = { m_presentContext.renderFinishedSemaphores[m_presentContext.imageIndex] };
 		presentInfo.waitSemaphoreCount = 1;
 		presentInfo.pWaitSemaphores = signalSemaphores;
 
@@ -349,7 +347,6 @@ namespace engine
 		presentInfo.pSwapchains = swapchains;
 		presentInfo.pImageIndices = &m_presentContext.imageIndex;
 
-		
 		auto result = vkQueuePresentKHR(getMajorGraphicsQueue(), &presentInfo);
 		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || m_presentContext.bSwapchainChange)
 		{
@@ -361,8 +358,8 @@ namespace engine
 			LOG_RHI_FATAL("Fail to present image.");
 		}
 
-		// if swapchain rebuild and on minimized, still add frame.
-		m_presentContext.currentFrame = (m_presentContext.currentFrame + 1) % m_swapchain.getBackbufferCount();
+		// Advance to next frame-in-flight (use MAX_FRAMES_IN_FLIGHT instead of swapchain buffer count)
+		m_presentContext.currentFrame = (m_presentContext.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
 	void VulkanContext::submit(uint32_t count, VkSubmitInfo* infos)
@@ -389,18 +386,20 @@ namespace engine
 	void VulkanContext::resetFence()
 	{
 		RHICheck(vkResetFences(m_device, 1, &m_presentContext.inFlightFences[m_presentContext.currentFrame]));
-	}
-
-	void VulkanContext::initPresentContext()
+	}	void VulkanContext::initPresentContext()
 	{
 		CHECK(getBackBufferCount() > 0);
 
 		auto& pct = m_presentContext;
 
-		pct.semaphoresImageAvailable.resize(getBackBufferCount());
-		pct.semaphoresRenderFinished.resize(getBackBufferCount());
-
-		pct.inFlightFences.resize(getBackBufferCount());
+		// Create frame-in-flight synchronization objects
+		pct.imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		pct.inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+		
+		// Create per-swapchain-image render finished semaphores (as recommended by validation layer)
+		pct.renderFinishedSemaphores.resize(getBackBufferCount());
+		
+		// Per-image fence tracking (size based on swapchain image count)
 		pct.imagesInFlight.resize(getBackBufferCount());
 		for (auto& fence : pct.imagesInFlight)
 		{
@@ -414,24 +413,38 @@ namespace engine
 		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-		for (size_t i = 0; i < getBackBufferCount(); i++)
+		// Create frame-in-flight acquire semaphores and fences
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		{
-			RHICheck(vkCreateSemaphore(getDevice(), &semaphoreInfo, nullptr, &pct.semaphoresImageAvailable[i]));
-			RHICheck(vkCreateSemaphore(getDevice(), &semaphoreInfo, nullptr, &pct.semaphoresRenderFinished[i]));
+			RHICheck(vkCreateSemaphore(getDevice(), &semaphoreInfo, nullptr, &pct.imageAvailableSemaphores[i]));
 			RHICheck(vkCreateFence(getDevice(), &fenceInfo, nullptr, &pct.inFlightFences[i]));
 		}
 
-	}
+		// Create per-image render finished semaphores
+		for (size_t i = 0; i < getBackBufferCount(); i++)
+		{
+			RHICheck(vkCreateSemaphore(getDevice(), &semaphoreInfo, nullptr, &pct.renderFinishedSemaphores[i]));
+		}
 
-	void VulkanContext::destroyPresentContext()
+	}	void VulkanContext::destroyPresentContext()
 	{
 		auto& pct = m_presentContext;
 
-		for (size_t i = 0; i < getBackBufferCount(); i++)
+		// Destroy frame-in-flight synchronization objects
+		for (size_t i = 0; i < pct.imageAvailableSemaphores.size(); i++)
 		{
-			vkDestroySemaphore(getDevice(), pct.semaphoresImageAvailable[i], nullptr);
-			vkDestroySemaphore(getDevice(), pct.semaphoresRenderFinished[i], nullptr);
+			vkDestroySemaphore(getDevice(), pct.imageAvailableSemaphores[i], nullptr);
+		}
+		
+		for (size_t i = 0; i < pct.inFlightFences.size(); i++)
+		{
 			vkDestroyFence(getDevice(), pct.inFlightFences[i], nullptr);
+		}
+
+		// Destroy per-image render finished semaphores
+		for (size_t i = 0; i < pct.renderFinishedSemaphores.size(); i++)
+		{
+			vkDestroySemaphore(getDevice(), pct.renderFinishedSemaphores[i], nullptr);
 		}
 	}
 }

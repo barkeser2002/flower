@@ -17,6 +17,9 @@
 #include <profile/profile.h>
 namespace engine
 {
+	// Maximum number of frames that can be processed simultaneously
+	constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
 	enum class EBuiltinTextures
 	{
 		min = 0,
@@ -124,12 +127,9 @@ namespace engine
 
 		// Submit to major graphics queue without reset sync fence.
 		void submitNoFence(uint32_t count, VkSubmitInfo* infos);
-
 		// Just reset major graphics queue sync fence.
-		void resetFence();
-
-		VkSemaphore getCurrentFrameWaitSemaphore() const { return m_presentContext.semaphoresImageAvailable[m_presentContext.currentFrame]; }
-		VkSemaphore getCurrentFrameFinishSemaphore() const { return m_presentContext.semaphoresRenderFinished[m_presentContext.currentFrame]; }
+		void resetFence();		VkSemaphore getCurrentFrameWaitSemaphore() const { return m_presentContext.imageAvailableSemaphores[m_presentContext.currentFrame]; }
+		VkSemaphore getCurrentFrameFinishSemaphore() const { return m_presentContext.renderFinishedSemaphores[m_presentContext.imageIndex]; }
 
 
 	public:
@@ -353,16 +353,18 @@ namespace engine
 		GLFWwindow*       m_window  = nullptr;
 		VkSurfaceKHR      m_surface = VK_NULL_HANDLE;
 		Swapchain         m_swapchain;
-		EBackBufferFormat m_backbufferFormat = EBackBufferFormat::SRGB_NonLinear;
-
-		struct PresentContext
+		EBackBufferFormat m_backbufferFormat = EBackBufferFormat::SRGB_NonLinear;		struct PresentContext
 		{
 			bool bSwapchainChange = false;
 			uint32_t imageIndex;
 			uint32_t currentFrame = 0;
-			std::vector<VkSemaphore> semaphoresImageAvailable;
-			std::vector<VkSemaphore> semaphoresRenderFinished;
+			
+			// Frame-in-flight synchronization objects
 			std::vector<VkFence> inFlightFences;
+			std::vector<VkSemaphore> imageAvailableSemaphores;
+			std::vector<VkSemaphore> renderFinishedSemaphores;
+			
+			// Per-image fence tracking to prevent using images that are still in flight
 			std::vector<VkFence> imagesInFlight;
 		} m_presentContext;
 
